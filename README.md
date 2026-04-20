@@ -600,3 +600,93 @@ The following questions cover filesystem concepts beyond the implementation scop
 - **Git Internals** (Pro Git book): https://git-scm.com/book/en/v2/Git-Internals-Plumbing-and-Porcelain
 - **Git from the inside out**: https://codewords.recurse.com/issues/two/git-from-the-inside-out
 - **The Git Parable**: https://tom.preston-werner.com/2009/05/19/the-git-parable.html
+
+---
+
+## Screenshots
+
+### Screenshot 1A
+
+![Screenshot 1A](screenshots/1a.png)
+
+### Screenshot 1B
+
+![Screenshot 1B](screenshots/1b.png)
+
+### Screenshot 2A
+
+![Screenshot 2A](screenshots/2a.png)
+
+### Screenshot 2B
+
+![Screenshot 2B](screenshots/2b.png)
+
+### Screenshot 3A
+
+![Screenshot 3A](screenshots/3a.png)
+
+### Screenshot 3B
+
+![Screenshot 3B](screenshots/3b.png)
+
+### Screenshot 4A
+
+![Screenshot 4A](screenshots/4a.png)
+
+### Screenshot 4B
+
+![Screenshot 4B](screenshots/4b.png)
+
+### Screenshot 4C
+
+![Screenshot 4C](screenshots/4c.png)
+
+### Final Integration Test 1
+
+![Final Integration Test 1](screenshots/final%20int%201.png)
+
+### Final Integration Test 2
+
+![Final Integration Test 2](screenshots/final%20int%202.png)
+
+### Final Integration Test 3
+
+![Final Integration Test 3](screenshots/final%20int%203.png)
+
+---
+
+## Analysis Answers
+
+### Q5.1
+
+A branch in PES-VCS would be stored exactly like Git stores it: as a file under `.pes/refs/heads/` containing a commit hash. To implement `pes checkout <branch>`, the system would first check whether `.pes/refs/heads/<branch>` exists and read the target commit hash from it. Then `.pes/HEAD` would be updated so it contains `ref: refs/heads/<branch>`. After that, PES-VCS would need to read the target commit object, follow its `tree` pointer, recursively walk all tree objects, and reconstruct the working directory so that the files on disk exactly match that tree snapshot.
+
+The working directory update is the complex part. Files present in the current branch but absent in the target tree must be removed. Files present in the target tree must be created or overwritten with the blob contents stored in the object store. Directory structure and executable bits must also be restored. This becomes difficult because checkout is not only a metadata update inside `.pes/`; it is also a potentially destructive filesystem synchronization operation on the user's real files.
+
+### Q5.2
+
+To detect a dirty working directory conflict using only the index and the object store, PES-VCS would compare three versions of each tracked file: the working directory copy, the staged version in the index, and the version in the target branch's tree. For every file tracked in the current index, PES-VCS can use `stat()` to compare the current file's metadata against the stored index metadata. If the file's `mtime` or `size` differ from the index entry, the working copy has changed since staging and should be treated as dirty.
+
+Then, for checkout, PES-VCS would compare the target branch's version of that same path against the current staged version. If the target branch contains a different blob hash for that file, and the working directory file is dirty relative to the index, checkout must refuse. That means the user has local changes that would be overwritten by switching branches. The same logic applies if the file was deleted locally or if one branch has the file and the other does not.
+
+### Q5.3
+
+In detached HEAD state, `.pes/HEAD` contains a commit hash directly instead of a symbolic reference like `ref: refs/heads/main`. If the user makes a new commit in this state, PES-VCS will still create the commit object normally, and the new commit will point to its parent just like any other commit. However, no branch name will move to follow it. Only `HEAD` will point to that new commit directly.
+
+Those commits are therefore easy to lose, because if the user later checks out a branch, `HEAD` will move away and no named reference will keep those detached commits reachable. Recovery is still possible as long as the commit hash is known. The user could create a new branch file under `.pes/refs/heads/` containing that detached commit hash, which would make the commits reachable again. In real Git, reflog helps find such commits; in PES-VCS, recovery would depend on remembering or discovering the commit hash before garbage collection removes it.
+
+### Q6.1
+
+Garbage collection can be implemented as a classic mark-and-sweep algorithm. In the mark phase, PES-VCS would start from every live reference, such as each file inside `.pes/refs/heads/` and possibly `HEAD` if it contains a direct commit hash. From each referenced commit, it would recursively visit the commit object, then its tree object, then every subtree and blob reachable from that tree, and then continue through the parent commit chain. Every visited object hash would be inserted into a hash set of reachable objects.
+
+In the sweep phase, PES-VCS would scan every file under `.pes/objects/`, reconstruct each full hash from its shard directory and filename, and check whether that hash exists in the reachable set. If it does not, the object is unreachable and can be deleted.
+
+The best data structure for tracking reachability is a hash set, because membership tests need to be fast while traversing a large object graph. For a repository with 100,000 commits and 50 branches, the exact number of visited objects depends on overlap, but in the worst practical case garbage collection may need to walk roughly all reachable commits plus their trees and blobs. That can easily mean several hundred thousand objects, and in a repository with many unique trees and blobs it could reach into the millions.
+
+### Q6.2
+
+Running garbage collection concurrently with commit creation is dangerous because commit creation is not instantaneous. A new commit is built in stages: first blobs may already exist, then tree objects are written, then the commit object is written, and only at the end is the branch reference updated. If GC runs in the middle, it might scan references before the new branch update happens. In that moment, the freshly written tree or commit objects are not yet reachable from any branch, so GC could incorrectly classify them as garbage and delete them.
+
+One race condition is: commit process writes a new tree object; before it writes the final commit and updates `refs/heads/main`, GC scans all refs, does not see any reference to that tree, and deletes it. Then commit creation finishes and writes a commit that points to a tree object that no longer exists. The repository is now corrupted.
+
+Git avoids this kind of issue by using careful object lifetime rules, temporary protection mechanisms, and coordination between reference updates and garbage collection. Conceptually, the fix is to ensure that GC only deletes objects that are provably old and unreachable, not objects that may be part of an in-progress commit. This is why concurrent GC must be designed very conservatively.
