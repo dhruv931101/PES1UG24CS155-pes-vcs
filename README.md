@@ -34,6 +34,18 @@ make all      # Build pes + test binaries
 make clean    # Remove all build artifacts
 ```
 
+### Development Workflow
+
+Use the following loop while working locally:
+
+```bash
+make clean
+make test
+git status
+```
+
+Generated repository state under `.pes/`, compiled binaries, object files, and the sample files created during the integration sequence are intentionally ignored in this repository so local test runs do not pollute the commit history.
+
 ### Author Configuration
 
 PES-VCS reads the author name from the `PES_AUTHOR` environment variable:
