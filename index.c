@@ -145,6 +145,26 @@ static int compare_index_entries(const void *a, const void *b) {
     return strcmp(ea->path, eb->path);
 }
 
+static int fsync_parent_dir(const char *path) {
+    char dir_path[520];
+    const char *slash = strrchr(path, '/');
+    if (!slash) {
+        snprintf(dir_path, sizeof(dir_path), ".");
+    } else {
+        size_t dir_len = (size_t)(slash - path);
+        if (dir_len >= sizeof(dir_path)) return -1;
+        memcpy(dir_path, path, dir_len);
+        dir_path[dir_len] = '\0';
+    }
+
+    int dir_fd = open(dir_path, O_RDONLY | O_DIRECTORY);
+    if (dir_fd < 0) return -1;
+
+    int rc = fsync(dir_fd);
+    close(dir_fd);
+    return rc;
+}
+
 int index_load(Index *index) {
     index->count = 0;
 
@@ -202,7 +222,10 @@ int index_save(const Index *index) {
     snprintf(temp_path, sizeof(temp_path), "%s.tmp", INDEX_FILE);
 
     FILE *f = fopen(temp_path, "w");
-    if (!f) return -1;
+    if (!f) {
+        free(sorted);
+        return -1;
+    }
 
     for (int i = 0; i < sorted->count; i++) {
         char hex[HASH_HEX_SIZE + 1];
@@ -240,7 +263,12 @@ int index_save(const Index *index) {
 
     int rc = rename(temp_path, INDEX_FILE);
     free(sorted);
-    return rc;
+    if (rc != 0) {
+        unlink(temp_path);
+        return -1;
+    }
+
+    return fsync_parent_dir(INDEX_FILE);
 }
 
 // Stage a file for the next commit.
