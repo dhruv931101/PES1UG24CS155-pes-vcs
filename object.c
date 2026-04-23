@@ -145,9 +145,12 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
     }
 
     char temp_path[560];
-    snprintf(temp_path, sizeof(temp_path), "%s.tmp.%ld", object_path_buf, (long)getpid());
+    if (snprintf(temp_path, sizeof(temp_path), "%s/.tmp_obj_XXXXXX", shard_dir) >= (int)sizeof(temp_path)) {
+        free(object_buf);
+        return -1;
+    }
 
-    int fd = open(temp_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    int fd = mkstemp(temp_path);
     if (fd < 0) {
         free(object_buf);
         return -1;
@@ -178,6 +181,11 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
     }
 
     if (rename(temp_path, object_path_buf) != 0) {
+        if (errno == EEXIST || object_exists(id_out)) {
+            unlink(temp_path);
+            free(object_buf);
+            return 0;
+        }
         unlink(temp_path);
         free(object_buf);
         return -1;

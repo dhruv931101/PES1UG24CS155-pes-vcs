@@ -31,23 +31,30 @@ int object_read(const ObjectID *id, ObjectType *type_out, void **data_out, size_
 
 // ─── PROVIDED ────────────────────────────────────────────────────────────────
 
+static const char *next_line(const char *p) {
+    const char *newline = strchr(p, '\n');
+    return newline ? newline + 1 : NULL;
+}
+
 // Parse raw commit data into a Commit struct.
 int commit_parse(const void *data, size_t len, Commit *commit_out) {
-    (void)len;
     const char *p = (const char *)data;
+    const char *end = p + len;
     char hex[HASH_HEX_SIZE + 1];
 
     // "tree <hex>\n"
     if (sscanf(p, "tree %64s\n", hex) != 1) return -1;
     if (hex_to_hash(hex, &commit_out->tree) != 0) return -1;
-    p = strchr(p, '\n') + 1;
+    p = next_line(p);
+    if (!p || p > end) return -1;
 
     // optional "parent <hex>\n"
     if (strncmp(p, "parent ", 7) == 0) {
         if (sscanf(p, "parent %64s\n", hex) != 1) return -1;
         if (hex_to_hash(hex, &commit_out->parent) != 0) return -1;
         commit_out->has_parent = 1;
-        p = strchr(p, '\n') + 1;
+        p = next_line(p);
+        if (!p || p > end) return -1;
     } else {
         commit_out->has_parent = 0;
     }
@@ -63,11 +70,24 @@ int commit_parse(const void *data, size_t len, Commit *commit_out) {
     *last_space = '\0';
     snprintf(commit_out->author, sizeof(commit_out->author), "%s", author_buf);
     commit_out->timestamp = ts;
-    p = strchr(p, '\n') + 1;  // skip author line
-    p = strchr(p, '\n') + 1;  // skip committer line
-    p = strchr(p, '\n') + 1;  // skip blank line
+    p = next_line(p);
+    if (!p || p > end) return -1;
 
-    snprintf(commit_out->message, sizeof(commit_out->message), "%s", p);
+    char committer_buf[256];
+    if (sscanf(p, "committer %255[^\n]\n", committer_buf) != 1) return -1;
+    p = next_line(p);
+    if (!p || p > end) return -1;
+
+    if (*p != '\n') return -1;
+    p++;
+    if (p > end) return -1;
+
+    size_t message_len = (size_t)(end - p);
+    if (message_len >= sizeof(commit_out->message)) {
+        message_len = sizeof(commit_out->message) - 1;
+    }
+    memcpy(commit_out->message, p, message_len);
+    commit_out->message[message_len] = '\0';
     return 0;
 }
 
@@ -93,6 +113,7 @@ int commit_serialize(const Commit *commit, void **data_out, size_t *len_out) {
                   commit->author, commit->timestamp,
                   commit->author, commit->timestamp,
                   commit->message);
+    if (n < 0 || (size_t)n >= sizeof(buf)) return -1;
 
     *data_out = malloc(n + 1);
     if (!*data_out) return -1;
